@@ -1,0 +1,16 @@
+proc io
+	push ebp eax esi
+        pushf
+        cld
+	mov ebp,esp
+	mov esi,[ebp+14]
+@@2:	segcs lodsb
+        or al,al
+	je @@1
+	 call i29
+	jmp @@2
+@@1:	mov  [ebp+14],esi
+        popf
+	pop esi eax ebp
+        ret
+endp io

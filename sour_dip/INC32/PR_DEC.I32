@@ -1,0 +1,17 @@
+proc pr_dec
+     push eax ebx ecx edx
+	XOR ECX,ECX
+	MOV EBX,10
+@@1:	XOR EDX,EDX
+	DIV EBX
+        PUSH DX
+	INC CX
+	OR EAX,EAX
+        JNZ @@1
+@@2:    POP ax
+        ADD al,'0'
+	 call i29
+        LOOP @@2
+     pop edx ecx ebx eax
+        ret
+endp pr_dec

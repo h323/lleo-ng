@@ -1,0 +1,4 @@
+proc i29
+ int 29h
+ ret
+endp i29
