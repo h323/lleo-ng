@@ -17,6 +17,8 @@ if (process.argv.length < 4) {
 		" - конвертировать базу данных ударений из старого (бинарного) формата в новый\n\n",
 		"node " + process.argv[1] + " w databasefile.json\n",
 		" - использовать веб-сервис rifmus.net для расстановки ударений в базе databasefile.json\n\n",
+		"node " + process.argv[1] + " m databasefile1.json databasefile2.json\n",
+		" - создать(дополнить) ассоциативную базу databasename1.json элементами базы database2.json\n\n",
 		"node " + process.argv[1] + " c databasefile.json stih.rtm\n",
 		" - сочинить стих, используя databasefile.json и файл ритма stih.rtm, например:\n",
 		"                      +--+--+--+  A\n",
@@ -33,6 +35,7 @@ switch (process.argv[2]) {
 	case 'b': createDb(); break;
 	case 'a': convertAccentsDb(); break;
 	case 'w': enrichDbUsingWebService(); break;
+	case 'm': mergeDb(); break;
 	case 'c': composePoem(); break;
 }
 
@@ -101,6 +104,39 @@ function enrichDbUsingWebService() {
 			saveDbToJsonFile(databasefile);
 			saveAccentsToJsonFile(accentsJson);
 		});
+}
+
+function mergeDb() {
+	var target = process.argv[3];
+	var source = process.argv[4];
+
+	try {
+		loadDbFromJsonFile(target);
+	} catch (err) {
+		console.log("Can't read " + target + ". Starting with empty database.");
+	}
+
+	var sourcedb = JSON.parse(fs.readFileSync(source, 'utf8'));
+
+	sourcedb.forEach((newEntry) => {
+		var existingEntry = databaseIdx[newEntry.asString];
+
+		if (existingEntry) {
+			// Existing word
+			if (newEntry.accentVerified && !existingEntry.accentVerified) {
+				setAccent(existingEntry, newEntry.accent);
+			}
+
+			existingEntry.links =
+				existingEntry.links.concat(newEntry.links.filter((i) => existingEntry.links.indexOf(i) < 0 ));
+		} else {
+			// New word
+			database.push(newEntry);
+			databaseIdx[newEntry.asString] = database[database.length - 1];
+		}
+	});
+
+	saveDbToJsonFile(target);
 }
 
 function composePoem() {
