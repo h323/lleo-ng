@@ -17,6 +17,8 @@ if (process.argv.length < 4) {
 		" - конвертировать базу данных ударений из старого (бинарного) формата в новый\n\n",
 		"node " + process.argv[1] + " w databasefile.json\n",
 		" - использовать веб-сервис rifmus.net для расстановки ударений в базе databasefile.json\n\n",
+		"node " + process.argv[1] + " v databasefile.json\n",
+		" - аналогично w, но только для тех слов из базы, в которых ударения не были расставлены ранее\n\n",
 		"node " + process.argv[1] + " m databasefile1.json databasefile2.json\n",
 		" - создать(дополнить) ассоциативную базу databasename1.json элементами базы database2.json\n\n",
 		"node " + process.argv[1] + " c databasefile.json stih.rtm\n",
@@ -35,6 +37,7 @@ switch (process.argv[2]) {
 	case 'b': createDb(); break;
 	case 'a': convertAccentsDb(); break;
 	case 'w': enrichDbUsingWebService(); break;
+	case 'v': enrichDbUsingWebService(true); break;
 	case 'm': mergeDb(); break;
 	case 'c': composePoem(); break;
 }
@@ -69,7 +72,7 @@ function convertAccentsDb() {
 	saveAccentsToJsonFile(json);
 }
 
-function enrichDbUsingWebService() {
+function enrichDbUsingWebService(skipVerified) {
 	var databasefile = process.argv[3];
 
 	loadDbFromJsonFile(databasefile);
@@ -80,26 +83,27 @@ function enrichDbUsingWebService() {
 		console.log("Can't read accents.json. Starting with empty accents database.");
 	}
 	
-	console.log("Making " + database.length + " requests to web service. Please, be patient...");
+	console.log("Requesting the web service. Please, be patient...");
 
 	var timer = setInterval(function() {
 		console.log("HTTP requests done: ", httpStats);
 	}, 5000);
 
-	Promise.all(database.map((entry) => queryRifmus(entry)))
+	Promise.all(database.map((entry) => queryRifmus(entry, skipVerified)))
 		.then((accents) => {
 			clearInterval(timer);
 			var succeeded = 0;
 
 			accents.forEach((a, i) => {
-				console.log(database[i].asString, a);
 				if (a != -1) {
+					console.log(database[i].asString, a);
+
 					succeeded += 1;
 					setAccent(database[i], a);
 				}
 			});
 
-			console.log(succeeded + " requests succeeded of total " + database.length);
+			console.log(succeeded + " requests succeeded");
 
 			saveDbToJsonFile(databasefile);
 			saveAccentsToJsonFile(accentsJson);
@@ -190,7 +194,7 @@ function httpGet(url) {
 	return new Promise((resolve, reject) => {
 		// select http or https module, depending on reqested url
 		const lib = url.startsWith('https') ? require('https') : require('http');
-		lib.globalAgent.maxSockets = 50;
+		lib.globalAgent.maxSockets = 45;
 
 		const request = lib.request(url, (response) => {
 			httpStats[response.statusCode] = (httpStats[response.statusCode] || 0) + 1;
@@ -200,6 +204,7 @@ function httpGet(url) {
 			}
 
 			const body = [];
+			response.setEncoding('utf8');
 			response.on('data', (chunk) => body.push(chunk));
 			response.on('end', () => {
 				return resolve(body.join(''))
@@ -221,20 +226,26 @@ function httpGet(url) {
 
 /********************************** Data querying and saving **********************************/
 
-function queryRifmus(databaseEntry) {
+function queryRifmus(databaseEntry, skipVerified) {
+	if (databaseEntry.accentVerified && skipVerified) {
+		return Promise.resolve(-1);
+	}
+
 	if (databaseEntry.syllables == null || databaseEntry.syllables.length < 2) {
 		return Promise.resolve(0);
 	}
-	
+
 	// Search for a string constructed from given word with an accent symbol (&#x301;) added after some vowel in it.
 	// Calculate the number of the vowel (which is also a number of the syllable) where accent symbol is found.
 	// Below is a fragment of the real data got from service:
-	//   <h1 class='nocaps' itemprop='name text'>
-	//     Рифма к слову
-	//     &laquo;всего&#x301;&raquo;
-	//   </h1>
+	// <div class='grid-full' id='result' itemscope itemtype='http://schema.org/Question'>
+    //    <h1 class='nocaps' itemprop='name text'>
+    //      Рифма к слову
+    //      &laquo;застре&#x301;лен&raquo;
+    //    </h1>
+    //    <div>
 
-	return httpGet("http://rifmus.net/rifma/" + encodeURIComponent(databaseEntry.asString))
+	return httpGet("https://rifmus.net/rifma/" + encodeURIComponent(databaseEntry.asString))
 		.then((response) => response.match(new RegExp("&laquo;" + databaseEntry.asString.replace(/([аоэиуыеёюя])/g, "$1(&#x301;)?"))).indexOf("&#x301;") - 1)
 		.catch((err) => -1);
 }
@@ -272,6 +283,10 @@ function loadDbFromJsonFile(databasefile) {
 	database = JSON.parse(fs.readFileSync(databasefile, 'utf8'));
 
 	database.forEach((entry) => {
+		if (entry.accent < 0) {
+			entry.accentVerified = false;
+			console.log("WARN: entry.accent < 0 in " + entry.asString + ". Marked as unverified.");
+		}
 		databaseIdx[entry.asString] = entry;
 	});
 
@@ -279,10 +294,12 @@ function loadDbFromJsonFile(databasefile) {
 }
 
 function loadPattern(patternfile) {
-	fs.readFileSync(patternfile, 'utf8').split(/\r?\n/).forEach((string) => {
+	var rhymes = {};
+	fs.readFileSync(patternfile, 'utf8').split(/\r?\n/).forEach((string, lineNum) => {
 		var line = {
 			pattern: [],
-			rhyme: null
+			rhyme: null,
+			weakRhyme: false
 		}
 		string.replace(/[A-Z+-]/g, (c) => {
 			if ( c === '+') {
@@ -293,6 +310,19 @@ function loadPattern(patternfile) {
 				line.rhyme = c;
 			}
 		})
+
+		// Check if any two lines should be rhymed but have different rhythm of their endings.
+		// Mark them as having a weak rhyme.
+		if (!rhymes[line.rhyme]) {
+			rhymes[line.rhyme] = line;
+		} else {
+			line.weakRhyme = rhymes[line.rhyme].weakRhyme =
+				(line.pattern.slice(-3).join() != rhymes[line.rhyme].pattern.slice(-3).join());
+		}
+
+		if (line.weakRhyme) {
+			console.log("WARN: Weak rhyme on line", lineNum);
+		}
 
 		if (line.pattern.length && line.rhyme) {
 			poem.push(line);
@@ -382,6 +412,10 @@ function splitSyllables(word) {
 // смысл слова и состав морфем.
 
 function setAccent(databaseEntry, syllableNo) {
+//	if (syllableNo < 0) {
+//		throw "Assertion failed: syllableNo " + syllableNo + " is invalid";
+//	}
+
 	if (syllableNo != 0 && databaseEntry.syllables == null) {
 		throw "Assertion failed: syllableNo " + syllableNo + " is out of bounds: " + databaseEntry;
 	}
@@ -560,14 +594,21 @@ function generalize(string) {
 	return string.replace(/\S/g, (w) => t[w] || w);
 }
 
-function checkRhyme(firstWord, secondWord) {
+function checkRhyme(firstWord, secondWord, weakRhyme) {
 	if (!firstWord.syllables || !secondWord.syllables) {
 		// слова без гласных не рифмуются
 		return false;
 	}
 
-	var a = firstWord.syllables.slice(firstWord.accent);
-	var b = secondWord.syllables.slice(secondWord.accent);
+	if (weakRhyme) {
+		var sliceLen = Math.min(firstWord.syllables.length - firstWord.accent, secondWord.syllables.length - secondWord.accent);
+
+		var a = firstWord.syllables.slice(-sliceLen);
+		var b = secondWord.syllables.slice(-sliceLen);
+	} else {
+		var a = firstWord.syllables.slice(firstWord.accent);
+		var b = secondWord.syllables.slice(secondWord.accent);
+	}
 
 	// 3. "ста-ры-е - гита-ро-ю" Количество слогов, стоящих после ударного, должно совпадать
 	if (a.length != b.length) {
@@ -774,7 +815,7 @@ function compose(args) {
 				// 6. Проверить совпадение ритма (такт и максимальное количество слогов), если не совпадает - к 4.
 				if (checkRythm(word, line.pattern.slice(0, lineCursor))) {
 					// 5. Если флаг "свободная рифма", то не проверять совпадение рифмы. Иначе если не совпадает - к 4.
-					if (!ending || !rhymes[line.rhyme] || checkRhyme(word, rhymes[line.rhyme])) {
+					if (!ending || !rhymes[line.rhyme] || checkRhyme(word, rhymes[line.rhyme], line.weakRhyme)) {
 						// 7. Погрузить в стек Е найденное слово, сферу поиска, курсор строки
 						E.unshift({ word: word, context: context, lineCursor: lineCursor });
 
