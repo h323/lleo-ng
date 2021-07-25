@@ -7,6 +7,7 @@ var poem = [];
 var httpStats = {};
 
 const fs = require('fs');
+const readline = require('readline');
 
 if (process.argv.length < 4) {
 	console.log(
@@ -19,6 +20,8 @@ if (process.argv.length < 4) {
 		" - использовать веб-сервис rifmus.net для расстановки ударений в базе databasefile.json\n\n",
 		"node " + process.argv[1] + " v databasefile.json\n",
 		" - аналогично w, но только для тех слов из базы, в которых ударения не были расставлены ранее\n\n",
+		"node " + process.argv[1] + " e databasefile.json\n",
+		" - вручную расставить ударения в тех словах из базы databasefile.json, где ударения не были расставлены ранее\n\n",
 		"node " + process.argv[1] + " m databasefile1.json databasefile2.json\n",
 		" - создать(дополнить) ассоциативную базу databasename1.json элементами базы database2.json\n\n",
 		"node " + process.argv[1] + " c databasefile.json stih.rtm\n",
@@ -38,6 +41,7 @@ switch (process.argv[2]) {
 	case 'a': convertAccentsDb(); break;
 	case 'w': enrichDbUsingWebService(); break;
 	case 'v': enrichDbUsingWebService(true); break;
+	case 'e': editAccents(); break;
 	case 'm': mergeDb(); break;
 	case 'c': composePoem(); break;
 }
@@ -108,6 +112,107 @@ function enrichDbUsingWebService(skipVerified) {
 			saveDbToJsonFile(databasefile);
 			saveAccentsToJsonFile(accentsJson);
 		});
+}
+
+function nextUnverifiedWord(startFrom) {
+	if (startFrom == null) {
+		startFrom = -1;
+	}
+	for (var i = startFrom + 1; i < database.length; ++i) {
+		if (!database[i].accentVerified) {
+			return i;
+		}
+	}
+	return null;
+}
+
+function printEditorHelp() {
+	console.log(
+		"\n\nДля расстановки ударений используйте команды:\n\n",
+		"y            - согласиться с предложенным вариантом ударения, перейти к следующему слову\n",
+		"s            - перейти к следующему слову\n",
+		"<число>      - задать номер ударного слога (начиная с 0), перейти к следующему слову\n",
+		"<слог>       - задать ударный слог, перейти к следующему слову\n",
+		"e <слово>    - перейти к ввденному слову\n",
+		"d            - показать запись в базе\n",
+		"wq           - сохранить базу и выйти\n",
+		"q или Ctrl-c - выйти без сохранения\n\n");
+};
+
+function editAccents() {
+	var databasefile = process.argv[3];
+
+	loadDbFromJsonFile(databasefile);
+
+	try {
+		loadAccentsFromJsonFile(accentsJson);
+	} catch (err) {
+		console.log("Can't read accents.json. Starting with empty accents database.");
+	}
+
+	var index = nextUnverifiedWord();
+
+	if (index === null) {
+		console.log("There are no unverified accents in database " + process.argv[3]);
+		return;
+	}
+
+	printEditorHelp();
+
+	const rl = readline.createInterface(process.stdin, process.stdout, (line) => {
+		const hint = database[index].syllables
+			.map(ss => ss.replace(/^\-*|\-*$/g, ''))
+			.filter(ss => line === '' || ss.startsWith(line));
+		return [hint, line];
+	});
+	rl.setPrompt(`${wordToString(database[index])} (${database[index].syllables.join()}) # `);
+	rl.prompt();
+
+	rl.on('line', (line) => {
+		const word = index && database[index];
+
+		if (line === '?') {
+			printEditorHelp();
+		} if (line === 'q') {
+			rl.close();
+		} else if (line === 'wq') {
+			saveDbToJsonFile(databasefile);
+			saveAccentsToJsonFile(accentsJson);
+			rl.close();
+		} else if (line === 'd') {
+			console.log(word);
+		} else if (line.startsWith('e ')) {
+			index = databaseIdx[line.slice(2)] && databaseIdx[line.slice(2)].index;
+		} else if (line === 's') {
+			index = nextUnverifiedWord(index);
+		} else if (index != null && line === 'y') {
+			word.accentVerified = true;
+			index = nextUnverifiedWord(index);
+		} else if (index != null && line.match(/\d+/)) {
+			const parsed = parseInt(line, 10);
+			if (parsed >= 0 && parsed < word.syllables.length) {
+				setAccent(word, parsed);
+				index = nextUnverifiedWord(index);
+			}
+		} else if (index != null) {
+			for (var s = 0; s < word.syllables.length; ++s) {
+				if (line === word.syllables[s].replace(/^\-*|\-*$/g, '')) {
+					setAccent(word, s);
+					index = nextUnverifiedWord(index);
+					break;
+				}
+			}
+		}
+
+		if (index == null) {
+			rl.setPrompt('(слово не найдено) # ');
+		} else {
+			rl.setPrompt(`${wordToString(database[index])} (${database[index].syllables.join()}) # `);
+		}
+		rl.prompt();
+	}).on('close', () => {
+		process.exit(0);
+	});
 }
 
 function mergeDb() {
