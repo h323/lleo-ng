@@ -6,7 +6,7 @@ var poem = [];
 
 var httpStats = {};
 
-var fs = require('fs');
+const fs = require('fs');
 
 if (process.argv.length < 4) {
 	console.log(
@@ -150,8 +150,12 @@ function composePoem() {
 	loadDbFromJsonFile(databasefile);
 	loadPattern(patternfile);
 
-	console.log(compose(
-		getRandomWord(), getRandomWord(), getRandomWord(), getRandomWord(), getRandomWord(), getRandomWord(), getRandomWord(), getRandomWord(), getRandomWord()));
+	while ((c = compose(
+		getRandomWord(), getRandomWord(), getRandomWord(),
+		getRandomWord(), getRandomWord(), getRandomWord(),
+		getRandomWord(), getRandomWord(), getRandomWord())) == null);
+
+	console.log(c);
 }
 
 /********************************** Utility functions **********************************/
@@ -296,37 +300,31 @@ function loadDbFromJsonFile(databasefile) {
 function loadPattern(patternfile) {
 	var rhymes = {};
 	fs.readFileSync(patternfile, 'utf8').split(/\r?\n/).forEach((string, lineNum) => {
-		var line = {
-			pattern: [],
-			rhyme: null,
-			weakRhyme: false
-		}
-		string.replace(/[A-Z+-]/g, (c) => {
-			if ( c === '+') {
-				line.pattern.push(1);
-			} else if ( c === '-' ) {
-				line.pattern.push(0);
-			} else {
-				line.rhyme = c;
+		try {
+			const [ignore, pattern, rhyme] = string.match(/([а-яА-Я +-]+) +([A-Z])/);
+			var line = {
+				pattern: pattern.toLowerCase(),
+				rhyme: rhyme,
+				weakRhyme: false
 			}
-		})
 
-		// Check if any two lines should be rhymed but have different rhythm of their endings.
-		// Mark them as having a weak rhyme.
-		if (!rhymes[line.rhyme]) {
-			rhymes[line.rhyme] = line;
-		} else {
-			line.weakRhyme = rhymes[line.rhyme].weakRhyme =
-				(line.pattern.slice(-3).join() != rhymes[line.rhyme].pattern.slice(-3).join());
-		}
+			// Check if any two lines should be rhymed but have different rhythm of their endings.
+			// Mark them as having a weak rhyme.
+			if (!rhymes[line.rhyme]) {
+				rhymes[line.rhyme] = line;
+			} else {
+				line.weakRhyme = rhymes[line.rhyme].weakRhyme =
+					(line.pattern.slice(-3) != rhymes[line.rhyme].pattern.slice(-3));
+			}
 
-		if (line.weakRhyme) {
-			console.log("WARN: Weak rhyme on line", lineNum);
-		}
+			if (line.weakRhyme) {
+				console.log("WARN: Weak rhyme on line", lineNum);
+			}
 
-		if (line.pattern.length && line.rhyme) {
-			poem.push(line);
-		}
+			if (line.pattern.length && line.rhyme) {
+				poem.push(line);
+			}
+		} catch (e) {}
 	});
 
 	console.log("Loaded pattern:\n", poem);
@@ -703,20 +701,97 @@ function getRandomWord(context) {
 	}
 }
 
-function checkRythm(word, pattern) {
-	// console.log("CHECK RYTHM:", word.asString);
+// Программу можно попытаться заставить использовать определенные слова или слоги,
+// указывая их в файле ритма. Поведение программы при этом следующее:
+//
+//    --+--+    - Строфа в 6 слогов. Длина слов - на усмотрение программы. Также
+//                программа может вставить между словами безударный предлог.
+//                Например: "ледянАя водА", "вдалекЕ в облакАх".
+//
+//    --+ --+   - Два слова, строго по три слога в каждом. Программа может вставить
+//                между словами предлог по своему усмотрению.
+//
+//    --+ и -+  - Два слова, соединенные союзом "И". Например: "человЕк И закОн"
+//
+//    -но       - Слово из двух слогов, оканчивающееся на ударный слог "но".
+//                Например: "винО", "кинО", но НЕ "днО".
+//
+//    +но       - Слово из двух слогов, оканчивающееся на безударный слог "но".
+//                Например: "стрАнно".
+
+function checkPattern(word, pattern) {
+	//console.log(`CHECK PATTERN: "${word.asString}" vs "${pattern}"`);
+	if (pattern.length == 0) {
+		throw "Assertion failed: Zero length pattern";
+	}
+
+	var p = pattern.length - 1;
+
+	const strictMatch = function(sequence) {
+		var ss = sequence.length - 1;
+
+		while (pattern[p] === sequence[ss] && p >= 0 && ss >= 0) {
+			ss -= 1;
+			p -= 1;
+		}
+
+		if (ss >= 0) {
+			return false;
+		} else {
+			return true;
+		}
+	}
 
 	if (word.syllables == null) {
-		return true;
+		if (pattern[p] === ' ') {
+			return 1;
+		} else if (pattern[p] !== '+' && pattern[p] !== '-') {
+			if (!strictMatch(word.asString)) {
+				return -1;
+			}
+		} else {
+			return 0;
+		}
 	} else {
-		var offset = pattern.length - word.syllables.length; // А влезает ли в строку?
+		var s = word.syllables.length - 1;
 
-		// console.log(pattern.slice(offset).join('\t'));
-		// console.log("\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t".slice(0, word.accent) + "*");
-		// console.log(word.syllables.join('\t'));
+		while (p >= 0 && s >= 0) {
+			if (pattern[p] === '+') {
+				// Ударный слог
+				if (s != word.accent) {
+					return -1;
+				}
+				p -= 1;
+				s -= 1;
+			} else if (pattern[p] === '-') {
+				// Безударный слог
+				if (s == word.accent) {
+					return -1;
+				}
+				p -= 1;
+				s -= 1;
+			} else if (pattern[p] === ' ') {
+				// Конец слова
+				return -1;
+			} else {
+				// Конкретный слог
+				if (strictMatch(word.syllables[s].replace(/^\-*|\-*$/g, ''))) {
+					s -= 1;
+				} else {
+					return -1;
+				}
+			}
+		}
 
-		return ((offset >= 0) && pattern[offset + word.accent]);
+		if (s >= 0) {
+			return -1;
+		}
 	}
+
+	while (pattern[p] == ' ') {
+		p -= 1;
+	}
+	return pattern.length - (p + 1);
 }
 
 function wordToString(word) {
@@ -736,6 +811,8 @@ function compose(args) {
 	var usedRhymes = {};
 
 	var context = seed; // 3. установить "сферу поиска" = "заданная тематика"
+
+	poem.forEach((line) => { delete line.composed; });
 
 	while (lineId >= 0) {
 		// Работа со строками
@@ -813,7 +890,8 @@ function compose(args) {
 				triedWords[word.asString] = true;
 
 				// 6. Проверить совпадение ритма (такт и максимальное количество слогов), если не совпадает - к 4.
-				if (checkRythm(word, line.pattern.slice(0, lineCursor))) {
+				const match = checkPattern(word, line.pattern.slice(0, lineCursor));
+				if (match >= 0) {
 					// 5. Если флаг "свободная рифма", то не проверять совпадение рифмы. Иначе если не совпадает - к 4.
 					if (!ending || !rhymes[line.rhyme] || checkRhyme(word, rhymes[line.rhyme], line.weakRhyme)) {
 						// 7. Погрузить в стек Е найденное слово, сферу поиска, курсор строки
@@ -822,7 +900,7 @@ function compose(args) {
 						// 8. Ассоциации найденного слова занести в сферу поиска
 						context = word;
 
-						lineCursor -= word.syllables && word.syllables.length;
+						lineCursor -= match;
 
 						// console.log("ACCEPTED!, lineCursor = ", lineCursor);
 					}
