@@ -694,7 +694,7 @@ function parseSourceText(sourcefile) {
 function generalize(string) {
 	var t = {'б': 'п','в': 'ф','г': 'к','д': 'т','ж': 'ш','щ': 'ш','з': 'с','м': 'н','ц': 'ч','ы': 'и','ю': 'у','я': 'а','э': 'е','о': 'ё', '-': ''};
 
-	return string.replace(/\S/g, (w) => t[w] || w);
+	return string.replace(/\S/g, (w) => t[w] != null ? t[w] : w);
 }
 
 function checkRhyme(firstWord, secondWord, weakRhyme) {
@@ -720,7 +720,7 @@ function checkRhyme(firstWord, secondWord, weakRhyme) {
 
 	// в случае ударения на  последний  слог проверяются  не парные буквы,  а только их совпадение
 	if (a.length == 1) {
-		return (a[0] == b[0]);
+		return a[0].replace('-', '') == b[0].replace('-', '');
 	}
 
 	// 2. "мно-гими - у-бо-ги-ми" Если слог не последний,  то уже не столько важна
